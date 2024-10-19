@@ -48,12 +48,25 @@ export class RealtimeRelay {
       try {
         const event = JSON.parse(data);
         this.log(`Relaying "${event.type}" to OpenAI`);
-        client.realtime.send(event.type, event);
+        
+        // Include voice and audio modalities for responses
+        client.realtime.send(event.type, {
+          ...event,
+          response: {
+            modalities: ["text", "audio"],
+            audio: {
+              voice: "alloy", // Specify the desired voice (e.g., "alloy")
+              format: "wav",  // You can change the format if necessary
+            },
+            instructions: "Please assist the user in a human-like, friendly tone.",
+          }
+        });
       } catch (e) {
         console.error(e.message);
         this.log(`Error parsing event from client: ${data}`);
       }
     };
+    
     ws.on('message', (data) => {
       if (!client.isConnected()) {
         messageQueue.push(data);
@@ -61,6 +74,7 @@ export class RealtimeRelay {
         messageHandler(data);
       }
     });
+    
     ws.on('close', () => client.disconnect());
 
     // Connect to OpenAI Realtime API
@@ -72,6 +86,7 @@ export class RealtimeRelay {
       ws.close();
       return;
     }
+    
     this.log(`Connected to OpenAI successfully!`);
     while (messageQueue.length) {
       messageHandler(messageQueue.shift());

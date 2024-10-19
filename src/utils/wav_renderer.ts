@@ -64,48 +64,50 @@ const normalizeArray = (
 
 export const WavRenderer = {
   /**
-   * Renders a point-in-time snapshot of an audio sample, usually frequency values
+   * Renders a visual cue when AI is speaking or user is speaking
    * @param canvas
    * @param ctx
    * @param data
-   * @param color
-   * @param pointCount number of bars to render
-   * @param barWidth width of bars in px
-   * @param barSpacing spacing between bars in px
-   * @param center vertically center the bars
+   * @param speakingState
    */
-  drawBars: (
+  drawSpeechVisual: (
     canvas: HTMLCanvasElement,
     ctx: CanvasRenderingContext2D,
     data: Float32Array,
-    color: string,
-    pointCount: number = 0,
-    barWidth: number = 0,
-    barSpacing: number = 0,
-    center: boolean = false
+    speakingState: 'ai' | 'user'
   ) => {
-    pointCount = Math.floor(
-      Math.min(
-        pointCount,
-        (canvas.width - barSpacing) / (Math.max(barWidth, 1) + barSpacing)
-      )
-    );
-    if (!pointCount) {
-      pointCount = Math.floor(
-        (canvas.width - barSpacing) / (Math.max(barWidth, 1) + barSpacing)
-      );
+    const points = normalizeArray(data, 10, true);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const baseRadius = 40; // Base radius of the ball
+
+    ctx.beginPath();
+
+    // Create a more "squishy" effect using sinusoidal wave deformations
+    const numberOfPoints = 50;  // Increase the number of points for smoother edges
+    const squishFactorMax = 5;  // Reduce the squish factor for less extreme deformation
+    const squishSpeed = 200;    // Adjust the speed of deformation
+
+    for (let i = 0; i <= numberOfPoints; i++) {
+      const angle = (i / numberOfPoints) * Math.PI * 2;
+      // Create smooth squishy deformations based on a sine wave
+      const squishFactor = Math.sin(Date.now() / squishSpeed + angle * 3) * squishFactorMax;
+      const radius = baseRadius + squishFactor;
+
+      const x = centerX + Math.cos(angle) * radius;
+      const y = centerY + Math.sin(angle) * radius;
+
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
     }
-    if (!barWidth) {
-      barWidth = (canvas.width - barSpacing) / pointCount - barSpacing;
-    }
-    const points = normalizeArray(data, pointCount, true);
-    for (let i = 0; i < pointCount; i++) {
-      const amplitude = Math.abs(points[i]);
-      const height = Math.max(1, amplitude * canvas.height);
-      const x = barSpacing + i * (barWidth + barSpacing);
-      const y = center ? (canvas.height - height) / 2 : canvas.height - height;
-      ctx.fillStyle = color;
-      ctx.fillRect(x, y, barWidth, height);
-    }
+
+    ctx.closePath();
+    ctx.fillStyle = 'black';
+    ctx.fill();
   },
 };
