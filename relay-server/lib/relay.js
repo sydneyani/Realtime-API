@@ -4,7 +4,6 @@ import { RealtimeClient } from '@openai/realtime-api-beta';
 export class RealtimeRelay {
   constructor(apiKey) {
     this.apiKey = apiKey;
-    this.sockets = new WeakMap();
     this.wss = null;
   }
 
@@ -30,8 +29,9 @@ export class RealtimeRelay {
       return;
     }
 
-    // Instantiate new client
-    this.log(`Connecting with key "${this.apiKey.slice(0, 3)}..."`);
+    // Session voice, modalities, and instructions are set by the browser
+    // client in session.update. Forward each event unchanged. Writing a
+    // `response` object onto unrelated events is not a valid Realtime payload.
     const client = new RealtimeClient({ apiKey: this.apiKey });
 
     // Relay: OpenAI Realtime API Event -> Browser Event
@@ -42,31 +42,19 @@ export class RealtimeRelay {
     client.realtime.on('close', () => ws.close());
 
     // Relay: Browser Event -> OpenAI Realtime API Event
-    // We need to queue data waiting for the OpenAI connection
+    // Queue data that arrives before the OpenAI connection is open.
     const messageQueue = [];
     const messageHandler = (data) => {
       try {
         const event = JSON.parse(data);
         this.log(`Relaying "${event.type}" to OpenAI`);
-        
-        // Include voice and audio modalities for responses
-        client.realtime.send(event.type, {
-          ...event,
-          response: {
-            modalities: ["text", "audio"],
-            audio: {
-              voice: "alloy", // Specify the desired voice (e.g., "alloy")
-              format: "wav",  // You can change the format if necessary
-            },
-            instructions: "Please assist the user in a human-like, friendly tone.",
-          }
-        });
+        client.realtime.send(event.type, event);
       } catch (e) {
         console.error(e.message);
-        this.log(`Error parsing event from client: ${data}`);
+        this.log('Error parsing event from client');
       }
     };
-    
+
     ws.on('message', (data) => {
       if (!client.isConnected()) {
         messageQueue.push(data);
@@ -74,20 +62,19 @@ export class RealtimeRelay {
         messageHandler(data);
       }
     });
-    
+
     ws.on('close', () => client.disconnect());
 
-    // Connect to OpenAI Realtime API
     try {
-      this.log(`Connecting to OpenAI...`);
+      this.log('Connecting to OpenAI...');
       await client.connect();
     } catch (e) {
       this.log(`Error connecting to OpenAI: ${e.message}`);
       ws.close();
       return;
     }
-    
-    this.log(`Connected to OpenAI successfully!`);
+
+    this.log('Connected to OpenAI successfully!');
     while (messageQueue.length) {
       messageHandler(messageQueue.shift());
     }
