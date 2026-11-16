@@ -1,372 +1,164 @@
-# OpenAI Realtime Console
+# Realtime Voice Agent
 
-The OpenAI Realtime Console is intended as an inspector and interactive API reference
-for the OpenAI Realtime API. It comes packaged with two utility libraries,
-[openai/openai-realtime-api-beta](https://github.com/openai/openai-realtime-api-beta)
-that acts as a **Reference Client** (for browser and Node.js) and
-[`/src/lib/wavtools`](./src/lib/wavtools) which allows for simple audio
-management in the browser.
+A browser voice agent for the [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime). Hold to talk, release to send, and the model answers with speech. An optional Node.js relay keeps the API key on the server.
 
+This repository is a fork of OpenAI's [realtime console](https://github.com/openai/openai-realtime-console). The audio path and reference client are from that project. The page here is a push-to-talk session with a custom system prompt and a microphone visualizer. The weather tool, memory panel, map, and event inspector from the upstream console are not in this tree.
 
+## Features
 
-# Starting the console
+- Push-to-talk capture. Press and hold, speak, then release. Releasing commits the audio buffer and asks the model for a response.
+- Spoken replies. Assistant audio is PCM16 at 24 kHz and is played as it arrives. A finished turn can be replayed from the transcript.
+- Barge-in. Starting a new push-to-talk turn stops playback and truncates the assistant item at the sample the listener had reached.
+- Live transcript. User audio is transcribed with `whisper-1`. Assistant text is the Realtime transcript.
+- Greeting. Connecting sends the text `Hello!`, which makes the model speak first.
+- Session instructions from [`src/utils/conversation_config.js`](src/utils/conversation_config.js). The prompt asks for a warm, patient assistant. The client does not register any tools, so lines in that prompt about opening apps or websites are instructions only.
+- Two ways to authenticate: paste a key into the page, or point the page at the local relay.
+- A canvas blob that deforms with the microphone frequency data while you are recording.
 
-This is a React project created using `create-react-app` that is bundled via Webpack.
-Install it by extracting the contents of this package and using;
+The reference client pinned in `package-lock.json` (`@openai/realtime-api-beta` at `2474cfe`) opens a session with voice `alloy`, modalities `text` and `audio`, and PCM16 input and output. Turn detection is `null`, so the UI is manual. The app then sets the instructions and `input_audio_transcription: { model: "whisper-1" }`. The model id that client connects with is `gpt-4o-realtime-preview-2024-10-01`.
+
+## Architecture
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Mic as Microphone
+  participant Page as ConsolePage
+  participant Client as RealtimeClient
+  participant Relay as RealtimeRelay
+  participant API as OpenAI Realtime API
+  participant Speaker as Speakers
+
+  Page->>Mic: WavRecorder.begin / record
+  Mic-->>Page: PCM16 mono chunks at 24 kHz
+  Page->>Client: appendInputAudio(mono)
+  Note over Page,Client: Release calls createResponse, which commits the buffer
+  alt REACT_APP_LOCAL_RELAY_SERVER_URL is set
+    Client->>Relay: Browser WebSocket, JSON events
+    Note over Relay: Messages wait until the OpenAI socket is open
+    Relay->>API: Same JSON events, Authorization Bearer
+  else Browser key
+    Client->>API: WebSocket, key in the subprotocol
+  end
+  API-->>Client: response.audio.delta, transcripts, session events
+  Client-->>Page: conversation.updated
+  Page->>Speaker: WavStreamPlayer.add16BitPCM
+```
+
+`ConsolePage` owns three objects for the life of the page:
+
+- `WavRecorder` reads the microphone through an AudioWorklet and emits mono PCM16.
+- `WavStreamPlayer` plays PCM16 chunks on a second AudioWorklet.
+- `RealtimeClient` from `@openai/realtime-api-beta` turns those chunks into Realtime events and turns server audio deltas back into PCM16.
+
+In relay mode the browser client is constructed with `{ url }` and no API key. The relay constructs its own `RealtimeClient` with `OPENAI_API_KEY` and copies JSON events in both directions. It accepts only the `/` path. It does not inspect or authenticate the browser.
+
+## Tech stack
+
+| Piece | What it is |
+| --- | --- |
+| UI | React 18, TypeScript, Sass, Create React App (`react-scripts` 5) |
+| Icons | `react-feather` |
+| Realtime client | `@openai/realtime-api-beta` (GitHub dependency, commit pinned in the lockfile) |
+| Browser audio | Vendored [`src/lib/wavtools`](src/lib/wavtools) (record, play, WAV pack, frequency data) |
+| Relay | Node.js, `ws`, `dotenv`, `nodemon` |
+| Model path | Realtime preview model above, `whisper-1` for input transcripts |
+
+`leaflet`, `react-leaflet`, and a package named `save` were installed but unused after the map UI was removed. They are not dependencies anymore.
+
+## Setup
+
+You need Node.js and npm, a Chromium, Firefox, or Safari build with AudioWorklet and microphone permission, and an OpenAI user or project key that can call the Realtime API.
 
 ```shell
-$ npm i
+npm install
+cp .env.example .env
 ```
 
-Start your server with:
+Edit `.env`. Variable reference:
+
+| Variable | Where it is read | Required | Purpose |
+| --- | --- | --- | --- |
+| `OPENAI_API_KEY` | Relay process only | Yes, for `npm run relay` | Sent as `Authorization: Bearer` from the relay. Never imported by the React app. |
+| `PORT` | Relay process | No | WebSocket port. Default `8081` when the value is missing or not a port number. |
+| `REACT_APP_LOCAL_RELAY_SERVER_URL` | Browser bundle | No | WebSocket URL of the relay, for example `ws://localhost:8081`. When set, the page does not ask for a key. |
+
+Create React App inlines `REACT_APP_*` when `npm start` or `npm run build` starts. Restart the dev server after changing it. `dotenv` is loaded with `override: true`, so values in `.env` replace variables already set in the shell for the relay process.
+
+The pinned browser client uses the URL as a WebSocket URL. Use `ws://`, not `http://`. The client appends `?model=gpt-4o-realtime-preview-2024-10-01`. The relay ignores that query string.
+
+### Browser key
+
+Leave `REACT_APP_LOCAL_RELAY_SERVER_URL` unset.
 
 ```shell
-$ npm start
+npm start
 ```
 
-It should be available via `localhost:3000`.
+Open [http://localhost:3000](http://localhost:3000). The page prompts for an API key and stores it in `localStorage` under `tmp::voice_api_key`. The header button shows the first three characters and replaces the key on click. That click clears all of `localStorage`, then reloads.
 
-# Table of contents
+Click **connect**, allow the microphone, and use **push to talk**. **disconnect** closes the socket, stops the microphone, and stops playback.
 
-1. [Using the console](#using-the-console)
-   1. [Using a relay server](#using-a-relay-server)
-1. [Realtime API reference client](#realtime-api-reference-client)
-   1. [Sending streaming audio](#sending-streaming-audio)
-   1. [Adding and using tools](#adding-and-using-tools)
-   1. [Interrupting the model](#interrupting-the-model)
-   1. [Reference client events](#reference-client-events)
-1. [Wavtools](#wavtools)
-   1. [WavRecorder quickstart](#wavrecorder-quickstart)
-   1. [WavStreamPlayer quickstart](#wavstreamplayer-quickstart)
-1. [Acknowledgements and contact](#acknowledgements-and-contact)
+### Relay
 
-# Using the console
-
-The console requires an OpenAI API key (**user key** or **project key**) that has access to the
-Realtime API. You'll be prompted on startup to enter it. It will be saved via `localStorage` and can be
-changed at any time from the UI.
-
-To start a session you'll need to **connect**. This will require microphone access.
-You can then choose between **manual** (Push-to-talk) and **vad** (Voice Activity Detection)
-conversation modes, and switch between them at any time.
-
-There are two functions enabled;
-
-- `get_weather`: Ask for the weather anywhere and the model will do its best to pinpoint the
-  location, show it on a map, and get the weather for that location. Note that it doesn't
-  have location access, and coordinates are "guessed" from the model's training data so
-  accuracy might not be perfect.
-- `set_memory`: You can ask the model to remember information for you, and it will store it in
-  a JSON blob on the left.
-
-You can freely interrupt the model at any time in push-to-talk or VAD mode.
-
-## Using a relay server
-
-If you would like to build a more robust implementation and play around with the reference
-client using your own server, we have included a Node.js [Relay Server](/relay-server/index.js).
+Uncomment `REACT_APP_LOCAL_RELAY_SERVER_URL` in `.env`, set `OPENAI_API_KEY`, and restart the React dev server if it is already running.
 
 ```shell
-$ npm run relay
+npm run relay
 ```
 
-It will start automatically on `localhost:8081`.
+The relay listens on `ws://localhost:8081` unless `PORT` is set. In another terminal:
 
-**You will need to create a `.env` file** with the following configuration:
-
-```conf
-OPENAI_API_KEY=YOUR_API_KEY
-REACT_APP_LOCAL_RELAY_SERVER_URL=http://localhost:8081
+```shell
+npm start
 ```
 
-You will need to restart both your React app and relay server for the `.env.` changes
-to take effect. The local server URL is loaded via [`ConsolePage.tsx`](/src/pages/ConsolePage.tsx).
-To stop using the relay server at any time, simply delete the environment
-variable or set it to empty string.
+The relay has to be running before you click **connect**. There is no key prompt in this mode.
 
-```javascript
-/**
- * Running a local relay server will allow you to hide your API key
- * and run custom logic on the server
- *
- * Set the local relay server address to:
- * REACT_APP_LOCAL_RELAY_SERVER_URL=http://localhost:8081
- *
- * This will also require you to set OPENAI_API_KEY= in a `.env` file
- * You can run it with `npm run relay`, in parallel with `npm start`
- */
-const LOCAL_RELAY_SERVER_URL: string =
-  process.env.REACT_APP_LOCAL_RELAY_SERVER_URL || '';
+### Static build
+
+```shell
+npm run build
 ```
 
-This server is **only a simple message relay**, but it can be extended to:
+This writes a static bundle to `build/`. The relay is still a separate process. The bundle contains whatever `REACT_APP_LOCAL_RELAY_SERVER_URL` was at build time.
 
-- Hide API credentials if you would like to ship an app to play with online
-- Handle certain calls you would like to keep secret (e.g. `instructions`) on
-  the server directly
-- Restrict what types of events the client can receive and send
+## Project structure
 
-You will have to implement these features yourself.
-
-# Realtime API reference client
-
-The latest reference client and documentation are available on GitHub at
-[openai/openai-realtime-api-beta](https://github.com/openai/openai-realtime-api-beta).
-
-You can use this client yourself in any React (front-end) or Node.js project.
-For full documentation, refer to the GitHub repository, but you can use the
-guide here as a primer to get started.
-
-```javascript
-import { RealtimeClient } from '/src/lib/realtime-api-beta/index.js';
-
-const client = new RealtimeClient({ apiKey: process.env.OPENAI_API_KEY });
-
-// Can set parameters ahead of connecting
-client.updateSession({ instructions: 'You are a great, upbeat friend.' });
-client.updateSession({ voice: 'alloy' });
-client.updateSession({ turn_detection: 'server_vad' });
-client.updateSession({ input_audio_transcription: { model: 'whisper-1' } });
-
-// Set up event handling
-client.on('conversation.updated', ({ item, delta }) => {
-  const items = client.conversation.getItems(); // can use this to render all items
-  /* includes all changes to conversations, delta may be populated */
-});
-
-// Connect to Realtime API
-await client.connect();
-
-// Send an item and triggers a generation
-client.sendUserMessageContent([{ type: 'text', text: `How are you?` }]);
+```text
+public/                 HTML shell and the OpenAI logomark
+relay-server/index.js   Loads .env, checks the API key, listens
+relay-server/lib/relay.js
+src/App.tsx             Renders ConsolePage
+src/pages/ConsolePage.tsx
+src/pages/ConsolePage.scss
+src/utils/conversation_config.js   System instructions
+src/utils/wav_renderer.ts          Canvas blob
+src/lib/wavtools/       Vendored record / playback library
+src/components/button/  Button used by the console
+readme/realtime-console-demo.png   Upstream console screenshot, not this UI
 ```
 
-## Sending streaming audio
+There is a Jest setup file and no test suite. `npm test` starts the Create React App runner and does not exercise the relay or the audio path.
 
-To send streaming audio, use the `.appendInputAudio()` method. If you're in `turn_detection: 'disabled'` mode,
-then you need to use `.generate()` to tell the model to respond.
+## Security
 
-```javascript
-// Send user audio, must be Int16Array or ArrayBuffer
-// Default audio format is pcm16 with sample rate of 24,000 Hz
-// This populates 1s of noise in 0.1s chunks
-for (let i = 0; i < 10; i++) {
-  const data = new Int16Array(2400);
-  for (let n = 0; n < 2400; n++) {
-    const value = Math.floor((Math.random() * 2 - 1) * 0x8000);
-    data[n] = value;
-  }
-  client.appendInputAudio(data);
-}
-// Pending audio is committed and model is asked to generate
-client.createResponse();
-```
+- Do not commit `.env`. `.gitignore` ignores `.env` and `.env.*`, and keeps `.env.example`. An earlier commit removed `.env` from `.gitignore`. It is ignored again. A search of the current tree and of reachable git history found no API keys, private keys, or committed env files. If a key was written to `.env` and pushed from another clone while that ignore rule was missing, or pasted into the browser on a shared machine, revoke it in the OpenAI dashboard and create a new one. The relay used to print the first three characters of the key to stdout. That log line is gone. Rotate a key if those logs were shipped somewhere you do not control.
+- Browser mode uses `dangerouslyAllowAPIKeyInBrowser`. The key sits in `localStorage` and is sent on the WebSocket subprotocol. Use that mode only on your own machine.
+- The relay is the path that keeps the key out of the page. It still has no caller authentication, and `ws` listens on all interfaces by default. Do not publish port `8081`. Anyone who can open that socket can spend the key.
+- The system prompt is in the client bundle. Anyone who loads the page can read it.
+- The relay forwards client events unchanged. It does not filter event types.
 
-## Adding and using tools
+## Roadmap
 
-Working with tools is easy. Just call `.addTool()` and set a callback as the second parameter.
-The callback will be executed with the parameters for the tool, and the result will be automatically
-sent back to the model.
+- Register real tools, or edit the system prompt so it does not describe actions this app cannot take.
+- Put the instructions and any tool handlers on the relay, and reject client events that try to replace them.
+- Require a shared secret on the relay and bind it to localhost unless a host is set on purpose.
+- Add a control for `server_vad`. The client supports it. This page does not switch it on.
+- Drive the canvas from assistant playback as well as the microphone.
+- Pin a current Realtime model and client instead of `gpt-4o-realtime-preview-2024-10-01`.
+- Add tests for relay queueing, pathname checks, and the push-to-talk commit / cancel sequence.
 
-```javascript
-// We can add tools as well, with callbacks specified
-client.addTool(
-  {
-    name: 'get_weather',
-    description:
-      'Retrieves the weather for a given lat, lng coordinate pair. Specify a label for the location.',
-    parameters: {
-      type: 'object',
-      properties: {
-        lat: {
-          type: 'number',
-          description: 'Latitude',
-        },
-        lng: {
-          type: 'number',
-          description: 'Longitude',
-        },
-        location: {
-          type: 'string',
-          description: 'Name of the location',
-        },
-      },
-      required: ['lat', 'lng', 'location'],
-    },
-  },
-  async ({ lat, lng, location }) => {
-    const result = await fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,wind_speed_10m`
-    );
-    const json = await result.json();
-    return json;
-  }
-);
-```
+## License
 
-## Interrupting the model
-
-You may want to manually interrupt the model, especially in `turn_detection: 'disabled'` mode.
-To do this, we can use:
-
-```javascript
-// id is the id of the item currently being generated
-// sampleCount is the number of audio samples that have been heard by the listener
-client.cancelResponse(id, sampleCount);
-```
-
-This method will cause the model to immediately cease generation, but also truncate the
-item being played by removing all audio after `sampleCount` and clearing the text
-response. By using this method you can interrupt the model and prevent it from "remembering"
-anything it has generated that is ahead of where the user's state is.
-
-## Reference client events
-
-There are five main client events for application control flow in `RealtimeClient`.
-Note that this is only an overview of using the client, the full Realtime API
-event specification is considerably larger, if you need more control check out the GitHub repository:
-[openai/openai-realtime-api-beta](https://github.com/openai/openai-realtime-api-beta).
-
-```javascript
-// errors like connection failures
-client.on('error', (event) => {
-  // do thing
-});
-
-// in VAD mode, the user starts speaking
-// we can use this to stop audio playback of a previous response if necessary
-client.on('conversation.interrupted', () => {
-  /* do something */
-});
-
-// includes all changes to conversations
-// delta may be populated
-client.on('conversation.updated', ({ item, delta }) => {
-  // get all items, e.g. if you need to update a chat window
-  const items = client.conversation.getItems();
-  switch (item.type) {
-    case 'message':
-      // system, user, or assistant message (item.role)
-      break;
-    case 'function_call':
-      // always a function call from the model
-      break;
-    case 'function_call_output':
-      // always a response from the user / application
-      break;
-  }
-  if (delta) {
-    // Only one of the following will be populated for any given event
-    // delta.audio = Int16Array, audio added
-    // delta.transcript = string, transcript added
-    // delta.arguments = string, function arguments added
-  }
-});
-
-// only triggered after item added to conversation
-client.on('conversation.item.appended', ({ item }) => {
-  /* item status can be 'in_progress' or 'completed' */
-});
-
-// only triggered after item completed in conversation
-// will always be triggered after conversation.item.appended
-client.on('conversation.item.completed', ({ item }) => {
-  /* item status will always be 'completed' */
-});
-```
-
-# Wavtools
-
-Wavtools contains easy management of PCM16 audio streams in the browser, both
-recording and playing.
-
-## WavRecorder Quickstart
-
-```javascript
-import { WavRecorder } from '/src/lib/wavtools/index.js';
-
-const wavRecorder = new WavRecorder({ sampleRate: 24000 });
-wavRecorder.getStatus(); // "ended"
-
-// request permissions, connect microphone
-await wavRecorder.begin();
-wavRecorder.getStatus(); // "paused"
-
-// Start recording
-// This callback will be triggered in chunks of 8192 samples by default
-// { mono, raw } are Int16Array (PCM16) mono & full channel data
-await wavRecorder.record((data) => {
-  const { mono, raw } = data;
-});
-wavRecorder.getStatus(); // "recording"
-
-// Stop recording
-await wavRecorder.pause();
-wavRecorder.getStatus(); // "paused"
-
-// outputs "audio/wav" audio file
-const audio = await wavRecorder.save();
-
-// clears current audio buffer and starts recording
-await wavRecorder.clear();
-await wavRecorder.record();
-
-// get data for visualization
-const frequencyData = wavRecorder.getFrequencies();
-
-// Stop recording, disconnects microphone, output file
-await wavRecorder.pause();
-const finalAudio = await wavRecorder.end();
-
-// Listen for device change; e.g. if somebody disconnects a microphone
-// deviceList is array of MediaDeviceInfo[] + `default` property
-wavRecorder.listenForDeviceChange((deviceList) => {});
-```
-
-## WavStreamPlayer Quickstart
-
-```javascript
-import { WavStreamPlayer } from '/src/lib/wavtools/index.js';
-
-const wavStreamPlayer = new WavStreamPlayer({ sampleRate: 24000 });
-
-// Connect to audio output
-await wavStreamPlayer.connect();
-
-// Create 1s of empty PCM16 audio
-const audio = new Int16Array(24000);
-// Queue 3s of audio, will start playing immediately
-wavStreamPlayer.add16BitPCM(audio, 'my-track');
-wavStreamPlayer.add16BitPCM(audio, 'my-track');
-wavStreamPlayer.add16BitPCM(audio, 'my-track');
-
-// get data for visualization
-const frequencyData = wavStreamPlayer.getFrequencies();
-
-// Interrupt the audio (halt playback) at any time
-// To restart, need to call .add16BitPCM() again
-const trackOffset = await wavStreamPlayer.interrupt();
-trackOffset.trackId; // "my-track"
-trackOffset.offset; // sample number
-trackOffset.currentTime; // time in track
-```
-
-# Acknowledgements and contact
-
-Thanks for checking out the Realtime Console. We hope you have fun with the Realtime API.
-Special thanks to the whole Realtime API team for making this possible. Please feel free
-to reach out, ask questions, or give feedback by creating an issue on the repository.
-You can also reach out and let us know what you think directly!
-
-- OpenAI Developers / [@OpenAIDevs](https://x.com/OpenAIDevs)
-- Jordan Sitkin / API / [@dustmason](https://x.com/dustmason)
-- Mark Hudnall / API / [@landakram](https://x.com/landakram)
-- Peter Bakkum / API / [@pbbakkum](https://x.com/pbbakkum)
-- Atty Eleti / API / [@athyuttamre](https://x.com/athyuttamre)
-- Jason Clark / API / [@onebitToo](https://x.com/onebitToo)
-- Karolis Kosas / Design / [@karoliskosas](https://x.com/karoliskosas)
-- Keith Horwood / API + DX / [@keithwhor](https://x.com/keithwhor)
-- Romain Huet / DX / [@romainhuet](https://x.com/romainhuet)
-- Katia Gil Guzman / DX / [@kagigz](https://x.com/kagigz)
-- Ilan Bigio / DX / [@ilanbigio](https://x.com/ilanbigio)
-- Kevin Whinnery / DX / [@kevinwhinnery](https://x.com/kevinwhinnery)
+[MIT](LICENSE). Copyright 2024 OpenAI and copyright 2024 Sydney Ani. The Realtime console, reference client, and wavtools originated at OpenAI. Changes in this fork are by Sydney Ani.
