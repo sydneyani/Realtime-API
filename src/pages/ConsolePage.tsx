@@ -1,27 +1,16 @@
-const LOCAL_RELAY_SERVER_URL: string =
-  process.env.REACT_APP_LOCAL_RELAY_SERVER_URL || '';
-
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { RealtimeClient } from '@openai/realtime-api-beta';
 import { ItemType } from '@openai/realtime-api-beta/dist/lib/client.js';
 import { WavRecorder, WavStreamPlayer } from '../lib/wavtools/index.js';
 import { instructions } from '../utils/conversation_config.js';
 import { WavRenderer } from '../utils/wav_renderer';
-import { X, Edit, Zap, ArrowUp, ArrowDown } from 'react-feather';
+import { X, Edit, Zap } from 'react-feather';
 import { Button } from '../components/button/Button';
-
 
 import './ConsolePage.scss';
 
-/**
- * Type for all event logs
- */
-interface RealtimeEvent {
-  time: string;
-  source: 'client' | 'server';
-  count?: number;
-  event: { [key: string]: any };
-}
+const LOCAL_RELAY_SERVER_URL: string =
+  process.env.REACT_APP_LOCAL_RELAY_SERVER_URL || '';
 
 export function ConsolePage() {
   /**
@@ -61,50 +50,16 @@ export function ConsolePage() {
   );
 
   /**
-   * References for
-   * - Rendering audio visualization (canvas)
-   * - Autoscrolling event logs
+   * References for rendering the user and assistant audio canvases.
    */
   const clientCanvasRef = useRef<HTMLCanvasElement>(null);
-  const serverCanvasRef = useRef<HTMLCanvasElement>(null);
-  const eventsScrollHeightRef = useRef(0);
-  const eventsScrollRef = useRef<HTMLDivElement>(null);
-  const startTimeRef = useRef<string>(new Date().toISOString());
 
   /**
-   * All of our variables for displaying application state
-   * - items are all conversation items (dialog)
-   * - realtimeEvents are event logs
+   * items are conversation turns (user, assistant, and any tool rows).
    */
   const [items, setItems] = useState<ItemType[]>([]);
-  const [realtimeEvents, setRealtimeEvents] = useState<RealtimeEvent[]>([]);
-  const [expandedEvents, setExpandedEvents] = useState<{
-    [key: string]: boolean;
-  }>({});
   const [isConnected, setIsConnected] = useState(false);
-  const [canPushToTalk, setCanPushToTalk] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
-
-  /**
-   * Utility for formatting the timing of logs
-   */
-  const formatTime = useCallback((timestamp: string) => {
-    const startTime = startTimeRef.current;
-    const t0 = new Date(startTime).valueOf();
-    const t1 = new Date(timestamp).valueOf();
-    const delta = t1 - t0;
-    const hs = Math.floor(delta / 10) % 100;
-    const s = Math.floor(delta / 1000) % 60;
-    const m = Math.floor(delta / 60_000) % 60;
-    const pad = (n: number) => {
-      let s = n + '';
-      while (s.length < 2) {
-        s = '0' + s;
-      }
-      return s;
-    };
-    return `${pad(m)}:${pad(s)}.${pad(hs)}`;
-  }, []);
 
   /**
    * When you click the API key
@@ -128,9 +83,7 @@ export function ConsolePage() {
     const wavStreamPlayer = wavStreamPlayerRef.current;
 
     // Set state variables
-    startTimeRef.current = new Date().toISOString();
     setIsConnected(true);
-    setRealtimeEvents([]);
     setItems(client.conversation.getItems());
 
     // Connect to microphone
@@ -153,7 +106,6 @@ export function ConsolePage() {
    */
   const disconnectConversation = useCallback(async () => {
     setIsConnected(false);
-    setRealtimeEvents([]);
     setItems([]);
 
     const client = clientRef.current;
@@ -199,38 +151,6 @@ export function ConsolePage() {
   };
 
   /**
-   * Switch between Manual <> VAD mode for communication
-   */
-  const changeTurnEndType = async (value: string) => {
-    const client = clientRef.current;
-    const wavRecorder = wavRecorderRef.current;
-    if (value === 'none' && wavRecorder.getStatus() === 'recording') {
-      await wavRecorder.pause();
-    }
-    client.updateSession({
-      turn_detection: value === 'none' ? null : { type: 'server_vad' },
-    });
-    if (value === 'server_vad' && client.isConnected()) {
-      await wavRecorder.record((data) => client.appendInputAudio(data.mono));
-    }
-    setCanPushToTalk(value === 'none');
-  };
-
-  /**
-   * Auto-scroll the event logs
-   */
-  useEffect(() => {
-    if (eventsScrollRef.current) {
-      const eventsEl = eventsScrollRef.current;
-      const scrollHeight = eventsEl.scrollHeight;
-      if (scrollHeight !== eventsScrollHeightRef.current) {
-        eventsEl.scrollTop = scrollHeight;
-        eventsScrollHeightRef.current = scrollHeight;
-      }
-    }
-  }, [realtimeEvents]);
-
-  /**
    * Auto-scroll the conversation logs
    */
   useEffect(() => {
@@ -250,58 +170,24 @@ export function ConsolePage() {
     const wavRecorder = wavRecorderRef.current;
     const clientCanvas = clientCanvasRef.current;
     let clientCtx: CanvasRenderingContext2D | null = null;
-  
-    const wavStreamPlayer = wavStreamPlayerRef.current;
-    const serverCanvas = serverCanvasRef.current;
-    let serverCtx: CanvasRenderingContext2D | null = null;
-  
+
+    let frameId = 0;
     const render = () => {
       if (clientCanvas) {
         clientCtx = clientCtx || clientCanvas.getContext('2d');
-        clientCtx?.clearRect(0, 0, clientCanvas.width, clientCanvas.height);
-        const userFrequency = wavRecorder.recording
-          ? wavRecorder.getFrequencies('voice').values
-          : new Float32Array([0]);
-  
-        // Updated drawSpeechVisual call for user
-        WavRenderer.drawSpeechVisual(
-          clientCanvas,
-          clientCtx!,
-          userFrequency,
-          '#0099ff',  // color for user
-          10,         // point count
-          5,          // bar width
-          2,          // bar spacing
-          true,       // center bars
-          'user'      // speaking state
-        );
+        if (clientCtx) {
+          const userFrequency = wavRecorder.recording
+            ? wavRecorder.getFrequencies('voice').values
+            : new Float32Array([0]);
+          WavRenderer.drawSpeechVisual(clientCanvas, clientCtx, userFrequency);
+        }
       }
-  
-      if (serverCanvas) {
-        serverCtx = serverCtx || serverCanvas.getContext('2d');
-        serverCtx?.clearRect(0, 0, serverCanvas.width, serverCanvas.height);
-        const aiFrequency = wavStreamPlayer.analyser
-          ? wavStreamPlayer.getFrequencies('voice').values
-          : new Float32Array([0]);
-  
-        // Updated drawSpeechVisual call for AI
-        WavRenderer.drawSpeechVisual(
-          serverCanvas,
-          serverCtx!,
-          aiFrequency,
-          '#009900',  // color for AI
-          10,         // point count
-          5,          // bar width
-          2,          // bar spacing
-          true,       // center bars
-          'ai'        // speaking state
-        );
-      }
-  
-      requestAnimationFrame(render);
+
+      frameId = requestAnimationFrame(render);
     };
-  
-    render();
+
+    frameId = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(frameId);
   }, []);
   
   
@@ -318,18 +204,6 @@ export function ConsolePage() {
     // Set transcription model
     client.updateSession({ input_audio_transcription: { model: 'whisper-1' } });
 
-    // handle realtime events from client + server for event logging
-    client.on('realtime.event', (realtimeEvent: RealtimeEvent) => {
-      setRealtimeEvents((realtimeEvents) => {
-        const lastEvent = realtimeEvents[realtimeEvents.length - 1];
-        if (lastEvent?.event.type === realtimeEvent.event.type) {
-          lastEvent.count = (lastEvent.count || 0) + 1;
-          return realtimeEvents.slice(0, -1).concat(lastEvent);
-        } else {
-          return realtimeEvents.concat(realtimeEvent);
-        }
-      });
-    });
     client.on('error', (event: any) => console.error(event));
     client.on('conversation.updated', async ({ item, delta }: any) => {
       const items = client.conversation.getItems();
@@ -358,8 +232,8 @@ export function ConsolePage() {
     <div data-component="ConsolePage">
       <div className="content-top">
         <div className="content-title">
-          <img src="/openai-logomark.svg" />
-          <span>realtime console</span>
+          <img src="/openai-logomark.svg" alt="" />
+          <span>realtime voice agent</span>
         </div>
         <div className="content-api-key">
           {!LOCAL_RELAY_SERVER_URL && (
@@ -379,7 +253,7 @@ export function ConsolePage() {
             <div className="content-block-title">conversation</div>
             <div className="content-block-body" data-conversation-content>
               {!items.length && `awaiting connection...`}
-              {items.map((conversationItem, i) => {
+              {items.map((conversationItem) => {
                 return (
                   <div className="conversation-item" key={conversationItem.id}>
                     <div className={`speaker ${conversationItem.role || ''}`}>
@@ -446,11 +320,11 @@ export function ConsolePage() {
           <div className="content-actions">
          
             <div className="spacer" />
-            {isConnected && canPushToTalk && (
+            {isConnected && (
               <Button
                 label={isRecording ? 'release to send' : 'push to talk'}
                 buttonStyle={isRecording ? 'alert' : 'regular'}
-                disabled={!isConnected || !canPushToTalk}
+                disabled={!isConnected}
                 onMouseDown={startRecording}
                 onMouseUp={stopRecording}
               />
